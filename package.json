@@ -1,0 +1,32 @@
+{
+  "name": "audit-trail-api",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "A dependency-free, append-only SQLite audit event API with tamper-evident hash chaining.",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --env-file=.env --watch src/server.js",
+    "test": "node --test tests/*.test.js",
+    "test:coverage": "node --experimental-test-coverage --test tests/*.test.js",
+    "smoke": "node scripts/smoke.js",
+    "verify": "node scripts/verify-chain.js",
+    "check": "node --check src/config.js && node --check src/domain.js && node --check src/strict-json.js && node --check src/checkpoint.js && node --check src/store.js && node --check src/api.js && node --check src/server.js && node --check scripts/checkpoint.js && node --check scripts/verify-chain.js && node --check scripts/backup.js && node --check scripts/benchmark.js && node --check scripts/e2e-disk.js && npm test && npm run smoke",
+    "backup": "node scripts/backup.js",
+    "benchmark": "node scripts/benchmark.js",
+    "checkpoint": "node scripts/checkpoint.js",
+    "e2e:disk": "node scripts/e2e-disk.js"
+  },
+  "license": "MIT",
+  "keywords": [
+    "audit-log",
+    "nodejs",
+    "sqlite",
+    "security",
+    "event-logging",
+    "tamper-evident"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "eventType": "user.role_changed",
+  "actorId": "admin_128",
+  "resourceType": "user",
+  "resourceId": "user_42",
+  "outcome": "success",
+  "metadata": {
+    "previousRole": "viewer",
+    "newRole": "editor",
+    "reason": "approved by support"
+  }
+}

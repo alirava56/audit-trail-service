@@ -1,0 +1,205 @@
+openapi: 3.1.0
+info:
+  title: Audit Trail API
+  version: 1.2.0
+  description: >-
+    A strict UTF-8 and unambiguous-JSON append-only audit collector with distinct write/read credentials.
+    Writer-supplied actorId and occurredAt are assertions, not independently verified user identity.
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local development only. Protect public deployments with HTTPS.
+components:
+  securitySchemes:
+    WriteKey:
+      type: http
+      scheme: bearer
+      description: AUDIT_WRITE_KEY. Only enables POST /v1/events.
+    ReadKey:
+      type: http
+      scheme: bearer
+      description: AUDIT_READ_KEY. Only enables GET /v1/events routes.
+  schemas:
+    CreateEvent:
+      type: object
+      additionalProperties: false
+      required: [eventType, actorId, outcome]
+      properties:
+        eventType:
+          type: string
+          minLength: 1
+          maxLength: 80
+          pattern: '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$'
+          example: auth.login
+        actorId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: user_42
+        outcome:
+          type: string
+          enum: [success, failure, denied]
+        resourceType:
+          type: string
+          maxLength: 64
+        resourceId:
+          type: string
+          maxLength: 128
+        metadata:
+          type: object
+          description: Maximum 4096 UTF-8 bytes; maximum 6 levels of nesting, 200 values. Exact large identifiers and decimal monetary values must use strings; unsafe JSON numbers are rejected.
+          additionalProperties: true
+        occurredAt:
+          type: string
+          format: date-time
+          description: Source-asserted time. Must not be more than 5 minutes in the future.
+    AuditEvent:
+      type: object
+      required: [sequence, id, serviceId, eventType, actorId, resourceType, resourceId, outcome, metadata, occurredAt, recordedAt, idempotencyKey, payloadDigest, previousHash, entryHash]
+      properties:
+        sequence: { type: integer, minimum: 1 }
+        id: { type: string, format: uuid }
+        serviceId: { type: string }
+        eventType: { type: string }
+        actorId: { type: string }
+        resourceType: { type: [string, 'null'] }
+        resourceId: { type: [string, 'null'] }
+        outcome: { type: string, enum: [success, failure, denied] }
+        metadata: { type: object, additionalProperties: true }
+        occurredAt: { type: string, format: date-time }
+        recordedAt: { type: string, format: date-time }
+        idempotencyKey: { type: [string, 'null'] }
+        payloadDigest: { type: string, pattern: '^[0-9a-f]{64}$' }
+        previousHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        entryHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+    EventResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AuditEvent' }
+    EventPage:
+      type: object
+      required: [data, nextCursor]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }
+        nextCursor: { type: [string, 'null'] }
+    Problem:
+      type: object
+      required: [type, title, status, detail, code, requestId]
+      properties:
+        type: { type: string, example: about:blank }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { type: string }
+        requestId: { type: string, format: uuid }
+  responses:
+    ClientError:
+      description: Request failure (for example validation, authorization or conflict)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+paths:
+  /health/live:
+    get:
+      summary: Liveness
+      responses:
+        '200':
+          description: Service process alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+    head:
+      summary: Liveness without response body
+      responses:
+        '200': { description: Service alive }
+  /health/ready:
+    get:
+      summary: SQLite readiness
+      responses:
+        '200': { description: Storage is accessible }
+        '503': { description: Storage unavailable }
+  /v1/events:
+    post:
+      summary: Append an audit event
+      security: [{ WriteKey: [] }]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          description: Optional key scoped to the writer service. Replays return 200; conflicts return 409.
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateEvent' }
+      responses:
+        '201':
+          description: Event created
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventResponse' }
+        '200':
+          description: Idempotent replay returned the original event
+          headers:
+            Idempotent-Replayed:
+              schema: { type: string, const: 'true' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventResponse' }
+        '400': { $ref: '#/components/responses/ClientError' }
+        '401': { $ref: '#/components/responses/ClientError' }
+        '409': { $ref: '#/components/responses/ClientError' }
+        '413': { $ref: '#/components/responses/ClientError' }
+        '415': { $ref: '#/components/responses/ClientError' }
+        '503': { $ref: '#/components/responses/ClientError' }
+        '507': { $ref: '#/components/responses/ClientError' }
+    get:
+      summary: List/filter audit events in descending sequence order
+      security: [{ ReadKey: [] }]
+      parameters:
+        - { name: eventType, in: query, schema: { type: string } }
+        - { name: actorId, in: query, schema: { type: string } }
+        - { name: resourceType, in: query, schema: { type: string } }
+        - { name: resourceId, in: query, schema: { type: string } }
+        - { name: outcome, in: query, schema: { type: string, enum: [success, failure, denied] } }
+        - { name: from, in: query, description: Inclusive recordedAt timestamp, schema: { type: string, format: date-time } }
+        - { name: to, in: query, description: Exclusive recordedAt timestamp, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: cursor, in: query, schema: { type: string, pattern: '^[1-9][0-9]*$' } }
+      responses:
+        '200':
+          description: Event page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventPage' }
+        '400': { $ref: '#/components/responses/ClientError' }
+        '401': { $ref: '#/components/responses/ClientError' }
+        '503': { $ref: '#/components/responses/ClientError' }
+  /v1/events/{id}:
+    get:
+      summary: Read event by UUID
+      security: [{ ReadKey: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Event
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventResponse' }
+        '400': { $ref: '#/components/responses/ClientError' }
+        '401': { $ref: '#/components/responses/ClientError' }
+        '404': { $ref: '#/components/responses/ClientError' }
+        '503': { $ref: '#/components/responses/ClientError' }

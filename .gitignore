@@ -1,0 +1,16 @@
+node_modules/
+.env
+.env.*
+!.env.example
+coverage/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+data/
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.checkpoint.json
+backups/
