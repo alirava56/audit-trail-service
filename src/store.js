@@ -137,9 +137,12 @@ export function openStore(location = ':memory:', { maxEvents = DEFAULT_MAX_EVENT
   let trusted;
   let trustedDataVersion;
   try {
+    db.exec('BEGIN IMMEDIATE');
+    assertSchemaComponents(db);
+    trustedDataVersion = currentVersion();
     trusted = verify(checkpoint);
     if (!trusted.ok) throw new Error(`Audit integrity verification failed at sequence ${trusted.sequence}: ${trusted.problem}`);
-    trustedDataVersion = currentVersion();
+    db.exec('COMMIT');
   } catch (err) { db.close(); throw err; }
 
   function assertTrusted() {
@@ -167,8 +170,8 @@ export function openStore(location = ':memory:', { maxEvents = DEFAULT_MAX_EVENT
   function append(event, serviceId, idempotencyKey = null) {
     assertTrusted();
     const requestDigest = sha256(canonicalJson(event));
-    db.exec('BEGIN IMMEDIATE');
     try {
+      db.exec('BEGIN IMMEDIATE');
       // If an external writer committed while waiting on BEGIN IMMEDIATE,
       // SQLite data_version will now report it on this same connection.
       assertTrusted();
@@ -274,7 +277,7 @@ export function openStore(location = ':memory:', { maxEvents = DEFAULT_MAX_EVENT
 export function verifyDatabaseFile(filename, { checkpoint = null } = {}) {
   const db = new DatabaseSync(filename, { readOnly: true });
   try {
-    db.exec('PRAGMA query_only = ON;');
+    db.exec('PRAGMA query_only = ON; BEGIN;');
     const v = Number(db.prepare('PRAGMA user_version').get().user_version);
     if (v !== SCHEMA_VERSION) throw new Error(`Unsupported database schema version: ${v}`);
     assertSchemaComponents(db);

@@ -59,10 +59,9 @@ async function readJsonBody(req) {
   }
   const parts = [];
   let bytes = 0;
-  for await (const part of req) {
+  for await (const part of req.iterator({ destroyOnReturn: false })) {
     bytes += part.byteLength;
     if (bytes > MAX_BODY_BYTES) {
-      req.resume();
       throw new ApiError(413, 'Payload Too Large', `Request body must not exceed ${MAX_BODY_BYTES} bytes`, 'payload_too_large');
     }
     parts.push(part);

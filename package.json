@@ -5,7 +5,7 @@
   "type": "module",
   "description": "A dependency-free, append-only SQLite audit event API with tamper-evident hash chaining.",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.16.0"
   },
   "scripts": {
     "start": "node src/server.js",

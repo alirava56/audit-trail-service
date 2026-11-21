@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createApi } from '../src/api.js';
+import { MAX_BODY_BYTES } from '../src/domain.js';
 import { openStore } from '../src/store.js';
 
 const writeKey = randomBytes(32).toString('base64url');
@@ -91,6 +92,22 @@ test('wrong media type and oversized content-length receive 415 and 413', () => 
   assert.equal(a.status, 415);
   const b = await request('POST', '/v1/events', { body: { ...event, metadata: { huge: 'a'.repeat(14_000) } } });
   assert.equal(b.status, 413);
+}));
+test('oversized streamed bodies receive a 413 response without appending an event', () => withApi(async ({ url, store }) => {
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(Buffer.alloc(MAX_BODY_BYTES, ' '));
+      controller.enqueue(Buffer.from(' '));
+      controller.close();
+    }
+  });
+  const response = await fetch(url + '/v1/events', {
+    method: 'POST', body, duplex: 'half',
+    headers: { Authorization: `Bearer ${writeKey}`, 'Content-Type': 'application/json' }
+  });
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).code, 'payload_too_large');
+  assert.equal(store.verify().checked, 0);
 }));
 test('missing event, malformed UUID and unknown paths return proper errors', () => withApi(async ({ request }) => {
   assert.equal((await request('GET', '/v1/events/not-uuid', { role: 'reader' })).status, 400);

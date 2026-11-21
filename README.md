@@ -28,7 +28,7 @@ The source service must be trusted: it **asserts** the `actorId` and optional `o
 
 ## Technology and prerequisites
 
-- **Node.js 24.22.3 LTS or a newer security-patched 24.x release recommended.** `node:sqlite` is a release-candidate API on Node 24.15+. Node 22.13+ can run the project but still marks SQLite as experimental; automated tests were additionally executed using Node 22.16.0.
+- **Node.js 24.22.3 LTS or a newer security-patched 24.x release recommended.** The minimum supported version is Node.js 22.16.0, where `node:sqlite` is experimental.
 - SQLite included in Node.js (`node:sqlite`); no separate SQLite installation or npm packages required.
 - Git and an optional Docker installation.
 

@@ -13,6 +13,7 @@ const anchor = join(dir, 'trusted.checkpoint.json');
 const backupFile = join(dir, 'archive.sqlite');
 const writeKey = randomBytes(32).toString('base64url');
 const readKey = randomBytes(32).toString('base64url');
+const windows = process.platform === 'win32';
 let child;
 function runCli(path, ...args) {
   const result = spawnSync(process.execPath, [path, ...args], { encoding: 'utf8', timeout: 10_000 });
@@ -28,12 +29,21 @@ async function choosePort() {
   return port;
 }
 async function start(port, checkpointPath = null) {
-  child = spawn(process.execPath, ['src/server.js'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+  // Windows child.kill() terminates Node without running its signal handlers.
+  // Use IPC there to invoke the same shutdown handler from inside the child.
+  const args = windows ? ['--input-type=module', '-e', `
+    import './src/server.js';
+    process.once('message', () => {
+      process.disconnect();
+      process.emit('SIGTERM', 'SIGTERM');
+    });
+  `] : ['src/server.js'];
+  child = spawn(process.execPath, args, {
+    stdio: ['ignore', 'ignore', 'pipe', ...(windows ? ['ipc'] : [])],
     env: { ...process.env, AUDIT_WRITE_KEY: writeKey, AUDIT_READ_KEY: readKey,
       AUDIT_DB_PATH: file, AUDIT_PORT: String(port), AUDIT_HOST: '127.0.0.1',
       AUDIT_WRITE_SERVICE: 'disk-e2e', AUDIT_MAX_EVENTS: '100',
-      ...(checkpointPath ? { AUDIT_TRUSTED_CHECKPOINT_PATH: checkpointPath } : {}) }
+      AUDIT_TRUSTED_CHECKPOINT_PATH: checkpointPath ?? '' }
   });
   let stderr = '';
   child.stderr.on('data', (part) => { stderr += part.toString('utf8'); });
@@ -52,9 +62,10 @@ async function stop() {
   if (!child) return;
   const p = child;
   child = null;
-  if (p.exitCode !== null) return;
+  if (p.exitCode !== null || p.signalCode !== null) return;
   const ended = new Promise((resolve) => p.once('exit', resolve));
-  p.kill('SIGTERM');
+  if (windows) p.send('shutdown', (err) => { if (err) p.kill(); });
+  else p.kill('SIGTERM');
   let cutoff;
   const timeout = new Promise((resolve) => { cutoff = setTimeout(() => { p.kill('SIGKILL'); resolve('timeout'); }, 5_000); });
   const code = await Promise.race([ended, timeout]);
