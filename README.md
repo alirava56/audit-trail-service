@@ -1,285 +1,196 @@
-# Audit Trail API
+# Audit Trail API | سرویس ثبت رویدادهای ممیزی
 
-**An append-only SQLite audit event service with scoped API keys, idempotent ingestion, keyset pagination, and verifiable SHA-256 hash chaining.**
+**یک API برای ثبت، جست‌وجو و بررسی یکپارچگی تاریخچهٔ رویدادهای حساس برنامه‌ها.**
 
-![Node.js](https://img.shields.io/badge/Node.js-24_LTS-339933)
-![SQLite](https://img.shields.io/badge/Storage-SQLite-0F80CC)
-![License](https://img.shields.io/badge/License-MIT-blue)
+فرض کنید نقش یک کاربر از «بیننده» به «ویرایشگر» تغییر کرده است. سرویس مبدأ می‌تواند ثبت کند چه کسی این تغییر را انجام داد، روی کدام حساب و با چه نتیجه‌ای. بعداً یک سرویس یا کاربر دارای کلید خواندن می‌تواند همان رویداد را پیدا کند. همین الگو برای ثبت ورود موفق یا ناموفق، تغییر تنظیمات و رد شدن یک درخواست دسترسی هم کاربرد دارد.
 
-> **Portfolio reference implementation.** Designed to demonstrate careful API contracts, secure input boundaries, SQL transactions, append-only data, idempotency and testable engineering decisions. Not a regulatory-compliant or tamper-proof audit archive.
+## امکانات
 
-## Why build it?
+- **تاریخچهٔ فقط‌افزودنی (Append-only).** API عملیات ثبت و خواندن دارد و تریگرهای SQLite جلوی `UPDATE` و `DELETE` عادی روی رویدادها را می‌گیرند.
+- **کلیدهای مجزای خواندن و نوشتن.** هر درخواست با کلید Bearer متناسب با عملیات احراز هویت می‌شود. شناسهٔ سرویس از تنظیمات سرور می‌آید.
+- **ثبت ایمن در برابر تلاش مجدد.** با `Idempotency-Key`، ارسال دوبارهٔ همان رویداد، رکورد قبلی را برمی‌گرداند. این قابلیت زمانی مفید است که سرویس مبدأ پاسخ درخواست اول را دریافت نکرده باشد.
+- **زنجیرهٔ هش SHA-256.** هر رویداد به هش رکورد قبلی متصل است. سرویس در شروع، ساختار پایگاه داده و زنجیره را بررسی می‌کند و در صورت تشخیص تغییر خارجی حین اجرا، دسترسی به رویدادها را متوقف می‌کند.
+- **جست‌وجو و صفحه‌بندی.** فیلتر بر اساس نوع رویداد، عامل، منبع، نتیجه و بازهٔ زمانی، با صفحه‌بندی بر پایهٔ شمارهٔ ترتیبی.
+- **ابزارهای عملیاتی.** بررسی سلامت، پشتیبان‌گیری آنلاین SQLite، راستی‌آزمایی فقط‌خواندنی زنجیره و ساخت نقطهٔ مرجع (Checkpoint).
 
-Applications need a defensible record of security-sensitive business activity (authentication outcomes, permission changes, configuration changes, order actions). A basic CRUD table allows accidental mutation, ambiguous authorship and hard-to-paginate searches. This service deliberately exposes **create + read only**, stores an immutable sequence via SQLite triggers and links each row to the previous row by a deterministic hash.
+## زبان‌ها و فناوری‌ها
 
-The source service must be trusted: it **asserts** the `actorId` and optional `occurredAt`. The server derives the `serviceId`, event ID, server recording time and integrity fields. The hash chain detects inconsistent changes but does **not** defeat a privileged administrator who can rewrite the database and regenerate hashes.
+| فناوری | کاربرد در پروژه |
+| --- | --- |
+| JavaScript و ES Modules | پیاده‌سازی API، منطق رویدادها، اسکریپت‌های عملیاتی و تست‌ها |
+| Node.js و `node:http` | سرور HTTP با ماژول داخلی Node.js |
+| SQLite، SQL و `node:sqlite` | ذخیرهٔ رویدادها، کوئری پارامتری، ایندکس‌ها، تراکنش، WAL و تریگرهای فقط‌افزودنی |
+| `node:crypto` | SHA-256، تولید UUID و مقایسهٔ هش کلیدهای API با زمان ثابت |
+| JSON، HTTP و Bearer Authentication | قرارداد ارسال و دریافت داده و کنترل دسترسی مسیرها |
+| YAML و OpenAPI 3.1 | توصیف مسیرها، مدل داده و پاسخ‌های API |
+| `node:test` و npm | اجرای تست‌ها، پوشش کد و فرمان‌های پروژه |
+| Docker و Bash | بسته‌بندی سرویس و تست ماندگاری داده روی Volume |
+| GitHub Actions | بررسی خودکار روی Node 22 و 24 و اجرای تست کانتینر |
+| Nginx | نمونهٔ اختیاری Reverse Proxy برای TLS و محدودکردن نرخ درخواست |
 
-## Highlights
+سرویس برای اجرا به پکیج شخص ثالث npm یا نصب جداگانهٔ SQLite نیاز ندارد.
 
-- **Append-only events:** `POST`, `GET`, no public update/delete routes; SQLite triggers reject ordinary update/delete statements.
-- **Separated read/write credentials:** constant-time SHA-256 digest comparison, server-derived service identity.
-- **Optional idempotency:** repeated `(serviceId, Idempotency-Key)` + identical request returns the original event; changed payload returns HTTP 409.
-- **Tamper-evident SHA-256 chain:** startup checks existing records, and API reads/writes fail closed when SQLite reports any unexpected change by another database connection. A separately trusted checkpoint can detect historical truncation/rewrite after restart.
-- **SQLite transactions:** serialized writers using `BEGIN IMMEDIATE`, WAL mode and `synchronous=FULL` for local durable storage.
-- **Fast practical queries:** strict field filters, indexes and descending sequence keyset pagination (`limit` 1–100).
-- **Strict request parsing:** reject invalid UTF-8 and duplicate JSON object keys (including escaped equivalent keys), bound JSON size, metadata nesting and value count; no client-supplied hash/sequence/service ID.
-- **Operational tools:** checked, safely published SQLite online backups; offline integrity verification; exportable checkpoints; health checks; graceful shutdown; configured record-capacity limit and CI tests.
-- **Zero external runtime dependencies:** built with Node.js core modules, native `node:sqlite` and `node:test`.
+## نصب و اجرای محلی
 
-## Technology and prerequisites
-
-- **Node.js 24.22.3 LTS or a newer security-patched 24.x release recommended.** The minimum supported version is Node.js 22.16.0, where `node:sqlite` is experimental.
-- SQLite included in Node.js (`node:sqlite`); no separate SQLite installation or npm packages required.
-- Git and an optional Docker installation.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    W[Trusted source service] -->|WRITE Bearer key| API[Node.js HTTP API]
-    API --> VALID[Schema / identity / idempotency]
-    VALID --> TX[SQLite transaction]
-    TX --> CHAIN[Append + SHA-256 chain]
-    CHAIN --> DB[(SQLite WAL)]
-    R[Authorized analyst] -->|READ Bearer key| API
-    API --> FILTER[Integrity gate + filters + cursor]
-    FILTER --> DB
-    VERIFY[Read-only verifier] --> DB
-    ANCHOR[Trusted checkpoint stored separately] -.-> VERIFY
-```
-
-Full design rationale: [Architecture](docs/ARCHITECTURE.md), [Security](docs/SECURITY.md), [OpenAPI 3.1 contract](docs/openapi.yaml), [ADR-0001](docs/adr/0001-dependency-free-http-sqlite.md), [Verification report (FA)](docs/verification/FINAL-REPORT-FA.md).
-
-## Quick start
+حداقل نسخهٔ Node.js **22.16.0** است. نسخهٔ **24.22.3 LTS** یا نسخهٔ امنیتی جدیدتر از شاخهٔ 24 پیشنهاد می‌شود. برای دریافت کد به Git نیاز دارید. Docker برای اجرای کانتینری اختیاری است.
 
 ```bash
-# 1. Clone and enter the repository
-# git clone https://github.com/<YOUR_USERNAME>/audit-trail-api.git
-cd audit-trail-api
-
-# 2. Create local config (never commit .env)
+git clone https://github.com/alirava56/audit-trail-service.git
+cd audit-trail-service
+npm ci
 cp .env.example .env
+```
 
-# 3. Generate two different secure keys (repeat twice)
+در PowerShell به‌جای خط آخر، `Copy-Item .env.example .env` را اجرا کنید. دستور زیر را دو بار اجرا کنید و دو خروجی متفاوت را در فایل `.env`، یکی برای `AUDIT_WRITE_KEY` و دیگری برای `AUDIT_READ_KEY`، بگذارید. فایل `.env` را در مخزن ثبت نکنید.
+
+```bash
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
-# Put each generated value in AUDIT_WRITE_KEY and AUDIT_READ_KEY in .env.
+```
 
-# 4. Start server, using Node's native env file support
+پس از تنظیم کلیدها، سرور را اجرا کنید.
+
+```bash
 node --env-file=.env src/server.js
 ```
 
-Windows PowerShell instructions: [SETUP-FA.md](SETUP-FA.md).
+سرویس در حالت پیش‌فرض روی `http://127.0.0.1:3000` در دسترس است. در ترمینال دیگری `curl http://127.0.0.1:3000/health/ready` را اجرا کنید. پاسخ موفق `{"status":"ready"}` است. در PowerShell می‌توانید از `curl.exe` یا `Invoke-RestMethod` استفاده کنید. [راهنمای گام‌به‌گام ویندوز](SETUP-FA.md)
 
-By default the service listens on `127.0.0.1:3000`. Public deployment requires a TLS-terminating reverse proxy and additional network restrictions. Never send Bearer tokens over unencrypted public HTTP.
+### تنظیمات محیطی
 
-### Environment variables
+| متغیر | پیش‌فرض | کاربرد |
+| --- | --- | --- |
+| `AUDIT_WRITE_KEY` | الزامی | کلید Base64url با حداقل ۳۲ بایت پس از دیکد، برای ثبت رویداد |
+| `AUDIT_READ_KEY` | الزامی | کلید مستقل با همان شرایط، برای خواندن رویدادها |
+| `AUDIT_WRITE_SERVICE` | `demo-api` | شناسهٔ سرویس مبدأ، ۲ تا ۶۴ کاراکتر و مطابق `^[a-z][a-z0-9_-]{1,63}$` |
+| `AUDIT_DB_PATH` | `./data/audit.sqlite` | مسیر فایل SQLite یا `:memory:` برای اجرای موقت |
+| `AUDIT_HOST` | `127.0.0.1` | یکی از `127.0.0.1`، `0.0.0.0` یا `::1` |
+| `AUDIT_PORT` | `3000` | پورت HTTP بین ۱ و ۶۵۵۳۵ |
+| `AUDIT_MAX_EVENTS` | `100000` | سقف تعداد رویداد، بین ۱ و ۱٬۰۰۰٬۰۰۰ |
+| `AUDIT_TRUSTED_CHECKPOINT_PATH` | تنظیم‌نشده | مسیر اختیاری فایل Checkpoint مورد اعتماد برای بررسی در شروع سرویس |
 
-| Variable | Default | Description |
-|---|---|---|
-| `AUDIT_WRITE_KEY` | **Required** | Random base64url key representing at least 32 decoded bytes |
-| `AUDIT_READ_KEY` | **Required** | Different random base64url key with read-only scope |
-| `AUDIT_WRITE_SERVICE` | `demo-api` | Trusted source-service ID, lower-case `[a-z0-9_-]` (2–64 chars) |
-| `AUDIT_DB_PATH` | `./data/audit.sqlite` | SQLite file path, or `:memory:` for tests |
-| `AUDIT_HOST` | `127.0.0.1` | `127.0.0.1`, `0.0.0.0` or `::1` |
-| `AUDIT_PORT` | `3000` | TCP port 1–65535 |
-| `AUDIT_MAX_EVENTS` | `100000` | Maximum accepted sequence in this database (1–1,000,000); append returns 507 when reached |
-| `AUDIT_TRUSTED_CHECKPOINT_PATH` | Unset | Optional path to a previously exported **independently trusted**, read-only checkpoint; startup checks the stored prefix against it |
+## استفاده از API
 
-## HTTP API
+| روش | مسیر | دسترسی | کاربرد |
+| --- | --- | --- | --- |
+| `GET` / `HEAD` | `/health/live` | بدون کلید | بررسی پاسخ‌گویی فرایند HTTP |
+| `GET` | `/health/ready` | بدون کلید | بررسی آمادگی ذخیره‌سازی، یکپارچگی و ظرفیت ثبت |
+| `POST` | `/v1/events` | کلید نوشتن | افزودن رویداد |
+| `GET` | `/v1/events` | کلید خواندن | فهرست و جست‌وجوی رویدادها |
+| `GET` | `/v1/events/{id}` | کلید خواندن | خواندن یک رویداد با UUID |
 
-| Method | Path | Scope | Description |
-|---|---|---|---|
-| `GET` | `/health/live` | Public | Liveness check |
-| `GET` | `/health/ready` | Public | Integrity, database access **and capacity for new events**; returns 503 when ingest is full |
-| `POST` | `/v1/events` | WRITE | Append new audit event |
-| `GET` | `/v1/events` | READ | Filtered, cursor-paginated list |
-| `GET` | `/v1/events/{uuid}` | READ | Read single event |
-| `PATCH/PUT/DELETE` | `/v1/events...` | None | Not supported; HTTP 405 |
+### ثبت رویداد
 
-### Create event
+در نمونهٔ زیر، `YOUR_WRITE_KEY` را با مقدار `AUDIT_WRITE_KEY` خود جایگزین کنید. فایل نمونه تغییر نقش کاربر را ثبت می‌کند. [نمونهٔ JSON درخواست](examples/event.json)
 
 ```bash
 curl -i -X POST http://127.0.0.1:3000/v1/events \
-  -H "Authorization: Bearer YOUR_WRITE_KEY" \
+  -H 'Authorization: Bearer YOUR_WRITE_KEY' \
   -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: signup-event-001' \
-  -d '{"eventType":"auth.login","actorId":"user_42","outcome":"success","resourceType":"session","resourceId":"session_99","metadata":{"method":"passkey"}}'
+  -H 'Idempotency-Key: role-change-001' \
+  --data-binary @examples/event.json
 ```
 
-**Request body** (`application/json`, optional UTF-8 charset including quoted form; max 12 KiB, strict UTF-8 decoding, duplicate JSON keys rejected at every level):
+| فیلد | توضیح |
+| --- | --- |
+| `eventType` | الزامی، نوع رویداد مانند `user.role_changed` یا `auth.login`، تا ۸۰ کاراکتر |
+| `actorId` | الزامی، شناسهٔ عامل اعلام‌شده توسط سرویس مبدأ، تا ۱۲۸ کاراکتر |
+| `outcome` | الزامی، یکی از `success`، `failure` یا `denied` |
+| `resourceType` و `resourceId` | اختیاری و همراه هم، نوع و شناسهٔ منبع، به‌ترتیب تا ۶۴ و ۱۲۸ کاراکتر |
+| `metadata` | شیء اختیاری با پیش‌فرض `{}`، حداکثر ۴ کیبی‌بایت UTF-8 و محدودیت عمق و تعداد مقادیر |
+| `occurredAt` | زمان اختیاری وقوع با قالب RFC 3339 و منطقهٔ زمانی مشخص، حداکثر پنج دقیقه جلوتر از زمان سرور |
 
-```json
-{
-  "eventType": "auth.login",
-  "actorId": "user_42",
-  "outcome": "success",
-  "resourceType": "session",
-  "resourceId": "session_99",
-  "metadata": { "method": "passkey" },
-  "occurredAt": "2026-11-21T11:25:00.000Z"
-}
-```
+بدنه باید JSON با کدگذاری UTF-8 و حداکثر ۱۲ کیبی‌بایت باشد. فیلدهای ناشناخته و کلیدهای JSON تکراری رد می‌شوند. شناسه‌های عددی بزرگ و اعداد اعشاری نیازمند دقت کامل را به‌صورت رشته بفرستید و رمز یا توکن را در `metadata` قرار ندهید.
 
-| Field | Rules |
-|---|---|
-| `eventType` | Required, max 80, lower-case dotted/dashed/underscored identifier |
-| `actorId` | Required, max 128, stable caller-provided identifier (not independently authenticated user identity) |
-| `outcome` | Required: `success`, `failure` or `denied` |
-| `resourceType` / `resourceId` | Optional together; identifies an affected object |
-| `metadata` | Optional object (default `{}`); max 4096 UTF-8 bytes; avoid secrets and PII. JSON numeric tokens must round-trip without changing their mathematical decimal value and have magnitude at most `Number.MAX_SAFE_INTEGER`; large IDs and exact decimal/money values **must be strings**. IEEE-754 floating-point fractions are not lossless decimal representations. |
-| `occurredAt` | Optional RFC3339 timestamp with timezone; no more than 5 minutes ahead of server time |
+ثبت موفق با `201 Created`، هدر `Location` و رویداد در فیلد `data` پاسخ داده می‌شود. سرور `id`، `sequence`، `serviceId`، `recordedAt` و فیلدهای هش را تولید می‌کند. هنگام نبودن `occurredAt`، زمان ثبت سرور برای آن استفاده می‌شود.
 
-**Success `201 Created`:**
+هدر اختیاری `Idempotency-Key` بین ۸ و ۱۲۸ کاراکتر ASCII مجاز است و در محدودهٔ شناسهٔ سرویس اعمال می‌شود. تکرار کلید با محتوای یکسان پاسخ `200 OK` و هدر `Idempotent-Replayed: true` دارد. استفاده از همان کلید با محتوای متفاوت پاسخ `409 Conflict` می‌دهد. بدون این هدر، هر درخواست موفق یک رویداد تازه می‌سازد.
 
-```json
-{
-  "data": {
-    "sequence": 1,
-    "id": "e23bf139-e63c-4420-b390-0406b1d27ffd",
-    "serviceId": "demo-api",
-    "eventType": "auth.login",
-    "actorId": "user_42",
-    "resourceType": "session",
-    "resourceId": "session_99",
-    "outcome": "success",
-    "metadata": { "method": "passkey" },
-    "occurredAt": "2026-11-21T11:25:00.000Z",
-    "recordedAt": "2026-11-21T11:25:01.000Z",
-    "idempotencyKey": "signup-event-001",
-    "payloadDigest": "64-character-sha256-hex-value",
-    "previousHash": "64-character-sha256-hex-value",
-    "entryHash": "64-character-sha256-hex-value"
-  }
-}
-```
-
-The above is an *illustrative response shape*, not a captured runtime response. Server-generated values vary.
-
-With the same valid `Idempotency-Key` and semantically identical request, the service returns **`200 OK`** with `Idempotent-Replayed: true` and exactly the same event. A changed payload with the same key returns `409 Conflict`. Without the optional key, each POST creates a new event.
-
-### Search and paginate
+### جست‌وجو و خواندن
 
 ```bash
-curl -H "Authorization: Bearer YOUR_READ_KEY" \
-  'http://127.0.0.1:3000/v1/events?eventType=auth.login&actorId=user_42&limit=20'
+curl -H 'Authorization: Bearer YOUR_READ_KEY' \
+  'http://127.0.0.1:3000/v1/events?eventType=user.role_changed&limit=10'
 ```
 
-Supported query parameters: `eventType`, `actorId`, `resourceType`, `resourceId`, `outcome`, `from`, `to`, `limit`, `cursor`.
+فیلترهای قابل استفاده شامل `eventType`، `actorId`، `resourceType`، `resourceId`، `outcome`، `from` و `to` هستند. بازه روی `recordedAt` اعمال می‌شود و مرز `from` شامل و مرز `to` غیرشامل است. نتیجه بر اساس `sequence` از جدید به قدیم می‌آید. `limit` بین ۱ و ۱۰۰ و پیش‌فرض آن ۲۰ است.
 
-- `from` is inclusive, `to` is exclusive; both filter **server `recordedAt`**.
-- `limit` defaults to 20, maximum 100.
-- Each response contains `data: []` and `nextCursor: string | null`.
-- To request the next page, pass `?cursor=<nextCursor>` *with the same filters*.
-- Pagination is based on descending sequence numbers, not OFFSET.
+پاسخ شامل آرایهٔ `data` و `nextCursor` است. برای صفحهٔ بعد همان فیلترها را با پارامتر `cursor` برابر `nextCursor` بفرستید. مقدار `null` یعنی صفحهٔ دیگری وجود ندارد. برای خواندن یک رویداد، شناسهٔ `data.id` را با کلید خواندن به مسیر `/v1/events/{id}` بدهید.
 
-### Errors
+### پاسخ‌های خطا
 
-The service responds with `application/problem+json`:
+خطاهای API در قالب `application/problem+json` برمی‌گردند و فیلدهای `code` و `requestId` برای تشخیص و پیگیری دارند.
 
-```json
-{
-  "type": "about:blank",
-  "title": "Bad Request",
-  "status": 400,
-  "detail": "Invalid outcome filter",
-  "code": "validation_error",
-  "requestId": "..."
-}
-```
+| وضعیت | معنی |
+| --- | --- |
+| `400` | بدنه، شناسه یا پارامتر جست‌وجوی نامعتبر |
+| `401` | کلید غایب، نامعتبر یا متعلق به عملیات دیگر |
+| `404` / `405` | مسیر یا رویداد موجود نیست، یا روش HTTP پشتیبانی نمی‌شود |
+| `409` | استفادهٔ دوباره از کلید idempotency با محتوای متفاوت |
+| `413` / `415` | بدنه بزرگ‌تر از سقف مجاز یا نوع محتوای پشتیبانی‌نشده |
+| `500` | خطای داخلی پیش‌بینی‌نشده |
+| `503` | ذخیره‌سازی یا یکپارچگی در دسترس نیست، یا سرویس آمادهٔ ثبت جدید نیست |
+| `507` | سقف رویدادها یا ظرفیت ذخیره‌سازی پر شده است |
 
-| HTTP status | Meaning |
-|---|---|
-| 400 | Malformed request/schema/query |
-| 401 | Missing, invalid or wrong-scope credential |
-| 404 | No matching event / route |
-| 405 | Unsupported write mutation method |
-| 409 | Idempotency key previously used for different content |
-| 413 | Exceeds request body limit |
-| 415 | Wrong Content-Type |
-| 500 | Unexpected internal error; details suppressed |
-| 503 | Audit integrity is unavailable; reads/writes refused pending investigation |
-| 507 | Configured event capacity or SQLite disk storage has been exhausted; new event is not persisted |
+[قرارداد کامل OpenAPI](docs/openapi.yaml)
 
-## Test and verification
+## معماری و مدل اعتماد
 
-```bash
-npm ci                  # Reproducible install; zero third-party dependencies
-npm test                # Unit + real HTTP integration tests
-npm run test:coverage   # Built-in Node coverage measurement
-npm run smoke           # Auto-started local server, write, read and verify
-npm run e2e:disk        # Process restart, on-disk DB, backup, checkpoint verification
-npm run check           # Syntax, tests and smoke
-npm run benchmark       # Informational localhost/in-memory load measurement
-```
+در مسیر ثبت، لایهٔ HTTP کلید را بررسی می‌کند، بدنه اعتبارسنجی و نرمال می‌شود و ذخیره‌ساز در یک تراکنش SQLite کلید idempotency را کنترل می‌کند. سپس شمارهٔ ترتیبی و هش رویداد را بر اساس داده‌های رکورد و هش رکورد قبلی می‌سازد. هنگام خواندن، SQLite از کوئری پارامتری و ایندکس‌ها برای فیلتر و صفحه‌بندی استفاده می‌کند.
 
-**Offline chain verification** (read-only):
+این پروژه برای **یک فرایند با یک هویت نویسندهٔ مورد اعتماد** طراحی شده است. هویت عامل و زمان اعلام‌شدهٔ وقوع از سرویس مبدأ می‌آیند. دسترسی SQLite همگام است و بررسی کل زنجیره در شروع، با تعداد رویدادها زمان بیشتری می‌برد. سقف رویداد بر حسب تعداد است. بعد از رسیدن به این سقف، آمادگی ثبت رویداد جدید `503` می‌شود و خواندن و تکرار idempotent رویداد قبلی همچنان ممکن است.
+
+زنجیرهٔ هش امکان تشخیص ناسازگاری را فراهم می‌کند. مدیر دارای دسترسی کامل به پایگاه داده می‌تواند تاریخچه و هش‌ها را دوباره بسازد. برای تشخیص حذف یا تغییر پیشوندی که قبلاً تأیید شده، Checkpoint را در فضای مستقل و محافظت‌شده نگه دارید. Checkpoint خروجی ابزار امضای دیجیتال ندارد.
+
+برای استقرار شبکه‌ای، HTTPS و محدودیت دسترسی را در لایهٔ Reverse Proxy یا زیرساخت اعمال کنید. مدیریت کلید، محدودیت نرخ، پایش فضای دیسک و سیاست نگهداری نسخهٔ پشتیبان مسئولیت محیط استقرار هستند. [معماری](docs/ARCHITECTURE.md) · [مدل امنیتی](docs/SECURITY.md) · [راهنمای استقرار](docs/DEPLOYMENT.md)
+
+## راستی‌آزمایی و پشتیبان‌گیری
 
 ```bash
 npm run verify -- --db ./data/audit.sqlite
-```
-
-**Trusted external checkpoints:** export a verified chain head, then copy the resulting JSON to immutable or independently controlled storage. Keeping the checkpoint next to the DB or granting the same operator write access to both defeats its threat-model purpose.
-
-```bash
-npm run checkpoint -- --db ./data/audit.sqlite --out ./backups/weekly.checkpoint.json
-# Move/copy that JSON OFF-HOST to separately trusted storage.
-# Later, using the trusted copy:
-npm run verify -- --db ./data/audit.sqlite --checkpoint ./backups/weekly.checkpoint.json
-```
-
-You can optionally configure `AUDIT_TRUSTED_CHECKPOINT_PATH` at startup to refuse a database whose verified chain no longer contains the known checkpoint prefix. A checkpoint **does not prove the legitimacy of subsequent writes** and is not digitally signed by this tool; its trust is supplied by protected external storage.
-
-**Checked, consistently snapshotted backup** (refuses corrupted chains and existing destinations; publishes only after validating the temporary backup):
-
-```bash
+npm run checkpoint -- --db ./data/audit.sqlite --out ./backups/audit.checkpoint.json
 npm run backup -- --db ./data/audit.sqlite --out ./backups/audit-backup.sqlite
-npm run verify -- --db ./backups/audit-backup.sqlite
+npm run verify -- --db ./backups/audit-backup.sqlite --checkpoint ./backups/audit.checkpoint.json
 ```
 
-The benchmark uses an **in-memory** database and loopback requests; its results are diagnostic only, not a production performance guarantee. Configure `BENCHMARK_REQUESTS` (1–10000) and `BENCHMARK_CONCURRENCY` (1–50) if desired.
+ابزار پشتیبان‌گیری، نسخهٔ سازگار با WAL می‌سازد، یکپارچگی‌اش را پیش از انتشار بررسی می‌کند و روی فایل مقصد موجود نمی‌نویسد. برای بررسی‌های بعدی، نسخهٔ قابل اعتماد Checkpoint را از محل مستقل بخوانید. برای بازیابی، سرویس را متوقف کنید، دادهٔ فعلی را حفظ کنید، نسخهٔ پشتیبان را با Checkpoint معتبر بررسی کنید و بعد از بازگردانی، آمادگی سرویس و خواندن رویداد را آزمایش کنید. [جزئیات بازیابی](docs/DEPLOYMENT.md#backups-and-recovery)
 
-Do not rely on copying a live SQLite file while WAL is enabled. Keep backup copies and chain head checkpoints in secure, separate storage. A database administrator can regenerate all hashes; without an external checkpoint this is not a non-repudiation guarantee.
+## اجرا با Docker
 
-## Docker
+بعد از تنظیم `.env`، این فرمان‌ها را از ریشهٔ مخزن اجرا کنید. دستور اجرای کانتینر در یک خط نوشته شده و در Bash و PowerShell قابل استفاده است.
 
 ```bash
 docker build -t audit-trail-api .
 docker volume create audit-trail-data
-docker run --rm -p 127.0.0.1:3000:3000 \
-  --env-file .env \
-  -e AUDIT_HOST=0.0.0.0 \
-  -e AUDIT_DB_PATH=/data/audit.sqlite \
-  -v audit-trail-data:/data \
-  audit-trail-api
+docker run --rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --env-file .env -e AUDIT_HOST=0.0.0.0 -e AUDIT_DB_PATH=/data/audit.sqlite -v audit-trail-data:/data -p 127.0.0.1:3000:3000 audit-trail-api
 ```
 
-**Why the explicit `-e` overrides?** The local `.env` intentionally sets `AUDIT_HOST=127.0.0.1` and `AUDIT_DB_PATH=./data/audit.sqlite`. Docker `--env-file` overrides Dockerfile `ENV`, so these two values must be overridden for container binding and persistent `/data` storage. The Docker CI job checks a write, container replacement, and read against the same volume. Docker execution is **not verified locally** unless you run it or the GitHub Actions Docker job passes.
+با تنظیمات پیش‌فرض پورت، آدرس میزبان `http://127.0.0.1:3000` است. دو گزینهٔ `-e` مقادیر محلی فایل `.env` را برای شبکه و مسیر دادهٔ داخل کانتینر بازنویسی می‌کنند. تصویر با کاربر غیرریشه اجرا می‌شود و Volume داده را پس از حذف خود کانتینر حفظ می‌کند. هر فایل SQLite را فقط به یک نمونهٔ سرویس وصل کنید.
 
-## Operational notes and limitations
+## تست‌ها
 
-1. **Only one trusted writer identity** is configured per process. A production multi-service setup needs a credential store and individual service identities.
-2. **No user-level authentication:** the upstream service asserts `actorId`. Do not mistake this for cryptographic identity proof.
-3. **Node's synchronous SQLite API blocks the event loop.** This is for low/moderate ingestion on a single persistent server, not horizontally scaled high-throughput event collection.
-4. **No built-in TLS, distributed rate limiter, automated retention, compliance certification or managed secret rotation.** Enforce these at the infrastructure layer.
-5. **Hash chains alone cannot stop a malicious DB administrator** or detect historical tail removal after restart without an independently trusted checkpoint. Runtime `PRAGMA data_version` detection is best-effort against external SQL changes, not a security boundary against a compromised host or same-process attacker.
-6. Startup checks all historical hashes in O(number of events) time. Changes detected from another SQLite connection force an unavailable state until investigated and restarted. Startup verification still performs an O(N) chain check. The event ceiling is count-based, not an exact disk-byte quota. Archive and migrate deliberately; do not silently delete audit records.
-7. JSON request bodies are rejected when ambiguous duplicate keys or malformed UTF-8 are detected. Treat metadata as sensitive operational information. Do not store passwords, access tokens, full customer profiles or unnecessary personal data.
-8. Schema changes require real migrations; this project supports schema version 1 only, compares the exact SQL definitions of all owned schema objects against a reference created by the running SQLite version, and refuses unknown versions before DDL. Equivalent but textually different schema definitions may be rejected by design.
-9. HTTPS, API gateway request limits, automated archiving and backup restore drills are still operational responsibilities; the application itself is not an enterprise WORM/SIEM product.
+| فرمان | پوشش |
+| --- | --- |
+| `npm test` | تست واحد و یکپارچهٔ HTTP و SQLite، شامل اعتبارسنجی، دسترسی‌ها و ثبت هم‌زمان |
+| `npm run check` | بررسی نحو JavaScript، اجرای تست‌ها و Smoke Test |
+| `npm run smoke` | راه‌اندازی سرور محلی و بررسی ثبت، خواندن و زنجیره |
+| `npm run e2e:disk` | ذخیره روی فایل واقعی، Checkpoint، پشتیبان‌گیری، بازیابی و خواندن بعد از راه‌اندازی دوباره |
+| `npm run test:coverage` | گزارش پوشش کد با ابزار داخلی Node.js |
+| `npm run benchmark` | اندازه‌گیری محلی با دیتابیس در حافظه برای بررسی عملکرد |
 
-See [Deployment and operations](docs/DEPLOYMENT.md), [Changelog](CHANGELOG.md) and the [v1.2 verification report](docs/verification/V1.2.0-FINAL-FA.md) for observed results and remaining limitations. Older reports are retained as historical records.
+CI همین بررسی‌ها را روی نسخه‌های تعریف‌شدهٔ Node اجرا می‌کند و سناریوی ساخت کانتینر، ثبت رویداد و خواندن دوباره با همان Volume را می‌آزماید. [گردش‌کار GitHub Actions](.github/workflows/ci.yml)
 
-## Repo navigation
+## ساختار مخزن
 
-```
-src/                 Strict JSON parser, HTTP adapter, config, domain, SQLite store
-scripts/             Checked online backup, checkpoint exporter, verifier, smoke and Docker CI tests
-tests/               Unit tests and real HTTP API integration tests
-docs/                Architecture, security, deployment, OpenAPI and ADR
-.github/workflows/   Automated verification
-SETUP-FA.md           Persian Windows / VS Code setup
-```
+| مسیر | محتوا |
+| --- | --- |
+| [`src/`](src/) | سرور HTTP، تنظیمات، اعتبارسنجی، پردازش JSON و SQLite |
+| [`tests/`](tests/) | تست‌های واحد، یکپارچه و رگرسیون |
+| [`scripts/`](scripts/) | اسکریپت‌های پشتیبان‌گیری، Checkpoint، راستی‌آزمایی، تست دیسک و Docker |
+| [`docs/`](docs/) | معماری، امنیت، استقرار، قرارداد API و تصمیم‌های فنی |
+| [`deploy/`](deploy/) | پیکربندی نمونهٔ Nginx |
+| [`examples/`](examples/) | نمونهٔ بدنهٔ درخواست |
+| [`CHANGELOG.md`](CHANGELOG.md) | تاریخچهٔ تغییرات پروژه |
 
-## License
+## مجوز
 
-MIT — see [LICENSE](LICENSE). This is independently authored reference code. Attribution should reflect actual contributors.
+این پروژه با مجوز MIT منتشر شده است. [متن مجوز](LICENSE)
